@@ -1,0 +1,60 @@
+name: 'ioc-sentinel'
+description: 'Extract indicators of compromise (URLs, domains, IPs, hashes, CVEs, wallets) from files and fail on watchlist hits'
+author: 'Louis Wright'
+branding: { icon: 'search', color: 'red' }
+inputs:
+  targets: { description: 'Files or directories to scan (space-separated)', default: '.' }
+  watchlist: { description: 'File of known-bad IOCs; matches are critical', default: '' }
+  types: { description: 'Comma-separated IOC types to extract', default: '' }
+  stix: { description: 'Write a STIX 2.1 bundle to this path', default: '' }
+  csv: { description: 'Write CSV to this path', default: '' }
+  fail-on: { description: 'critical | high | medium | low | info | none', default: 'critical' }
+  config: { description: 'Path to JSON config file', default: '' }
+  sarif: { description: 'Write SARIF to this path', default: '' }
+  json: { description: 'Write JSON report to this path', default: '' }
+  job-summary: { description: 'Write the Markdown report to the job summary (true/false)', default: 'true' }
+  args: { description: 'Extra CLI arguments', default: '' }
+outputs:
+  markdown-file: { description: 'Path of the Markdown report', value: '${{ steps.run.outputs.markdown-file }}' }
+  exit-code: { description: 'Exit code of the scan (0 pass, 1 findings, 2 error)', value: '${{ steps.run.outputs.exit-code }}' }
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with: { node-version: '20' }
+    - id: run
+      shell: bash
+      env:
+        IOC_TARGETS: ${{ inputs.targets }}
+        IOC_WATCHLIST: ${{ inputs.watchlist }}
+        IOC_TYPES: ${{ inputs.types }}
+        IOC_STIX: ${{ inputs.stix }}
+        IOC_CSV: ${{ inputs.csv }}
+        IOC_FAIL_ON: ${{ inputs.fail-on }}
+        IOC_CONFIG: ${{ inputs.config }}
+        IOC_SARIF: ${{ inputs.sarif }}
+        IOC_JSON: ${{ inputs.json }}
+        IOC_JOB_SUMMARY: ${{ inputs.job-summary }}
+        IOC_ARGS: ${{ inputs.args }}
+        IOC_BIN: ${{ github.action_path }}/bin/ioc-sentinel.js
+      run: |
+        md="$RUNNER_TEMP/ioc-sentinel.md"
+        # shellcheck disable=SC2206
+        targets=($IOC_TARGETS)
+        args=("${targets[@]}" --fail-on "$IOC_FAIL_ON" --markdown "$md")
+        [ -n "$IOC_WATCHLIST" ] && args+=(--watchlist "$IOC_WATCHLIST")
+        [ -n "$IOC_TYPES" ] && args+=(--types "$IOC_TYPES")
+        [ -n "$IOC_STIX" ] && args+=(--stix "$IOC_STIX")
+        [ -n "$IOC_CSV" ] && args+=(--csv "$IOC_CSV")
+        [ -n "$IOC_CONFIG" ] && args+=(--config "$IOC_CONFIG")
+        [ -n "$IOC_SARIF" ] && args+=(--sarif "$IOC_SARIF")
+        [ -n "$IOC_JSON" ] && args+=(--json "$IOC_JSON")
+        set +e
+        # shellcheck disable=SC2086
+        node "$IOC_BIN" "${args[@]}" $IOC_ARGS
+        code=$?
+        set -e
+        echo "markdown-file=$md" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$IOC_JOB_SUMMARY" = "true" ] && [ -f "$md" ]; then cat "$md" >> "$GITHUB_STEP_SUMMARY"; fi
+        exit $code

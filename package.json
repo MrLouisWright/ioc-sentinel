@@ -1,0 +1,58 @@
+{
+  "name": "ioc-sentinel",
+  "version": "0.0.0",
+  "description": "IOC extractor for threat intel and incident response: pulls URLs, domains, IPv4/IPv6, emails, MD5/SHA1/SHA256/SHA512, CVEs, ATT&CK IDs, crypto wallets and registry keys from text, logs and reports, refangs defanged IOCs, filters noise and exports JSON, CSV, STIX 2.1 and SARIF. Zero deps.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "ioc-sentinel": "bin/ioc-sentinel.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "action.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "ioc",
+    "indicators-of-compromise",
+    "threat-intelligence",
+    "cti",
+    "incident-response",
+    "dfir",
+    "stix",
+    "refang",
+    "defang",
+    "malware-analysis",
+    "security",
+    "sarif",
+    "cli",
+    "github-action"
+  ],
+  "author": "Louis Wright <hello@louiswright.co.uk> (https://github.com/MrLouisWright)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrLouisWright/ioc-sentinel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MrLouisWright/ioc-sentinel/issues"
+  },
+  "homepage": "https://github.com/MrLouisWright/ioc-sentinel#readme"
+}
