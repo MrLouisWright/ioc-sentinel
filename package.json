@@ -1,6 +1,6 @@
 {
   "name": "ioc-sentinel",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "IOC extractor for threat intel and incident response: pulls URLs, domains, IPv4/IPv6, emails, MD5/SHA1/SHA256/SHA512, CVEs, ATT&CK IDs, crypto wallets and registry keys from text, logs and reports, refangs defanged IOCs, filters noise and exports JSON, CSV, STIX 2.1 and SARIF. Zero deps.",
   "type": "module",
   "main": "./src/index.js",
