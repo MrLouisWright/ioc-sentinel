@@ -1,5 +1,7 @@
 # ioc-sentinel
 
+[![npm version](https://img.shields.io/npm/v/ioc-sentinel.svg)](https://www.npmjs.com/package/ioc-sentinel) [![CI](https://github.com/MrLouisWright/ioc-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/MrLouisWright/ioc-sentinel/actions/workflows/ci.yml) [![Node](https://img.shields.io/node/v/ioc-sentinel.svg)](https://nodejs.org) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > Extract indicators of compromise from threat reports, logs, emails and binaries, then export them as CSV, STIX 2.1, JSON or SARIF.
 
 `ioc-sentinel` pulls IOCs out of any text: URLs, domains, IPv4/IPv6 addresses, email addresses, MD5/SHA1/SHA256/SHA512 hashes, CVE IDs, MITRE ATT&CK IDs, Bitcoin/Ethereum/Monero wallets, Windows registry keys and suspicious file names. It **refangs** defanged indicators (`hxxps://evil[.]com`, `user[@]domain(dot)ru`) before matching, removes the usual noise (private IPs, `example.com`, XML namespaces, `setup.py`-style file names) and can **fail a pipeline when an IOC matches your watchlist**.
