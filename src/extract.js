@@ -1,16 +1,11 @@
 import { TLDS, FILE_EXT } from './tlds.js';
 
-/** Undo common defanging: hxxp, [.], (.), {.}, [dot], [:], [@], [at], fxp, \. etc. */
+import { refang as dsRefang, defangValue } from 'defang-sentinel';
+
+// Refanging/defanging lives in defang-sentinel; these wrappers keep the 1.0 API working.
+/** Undo defanging (delegates to defang-sentinel, plus legacy "punto"/"sftx" spellings). */
 export function refang(s) {
-  return String(s)
-    .replace(/\b(h[xX]{2}p)(s?)(\[?:\]?|\[:\])\/\//gi, (_, __, sec) => `http${sec}://`)
-    .replace(/\bh(?:\[x\]|xx|XX|\*\*)p(s?)\b/g, 'http$1')
-    .replace(/\bfxp\b/gi, 'ftp').replace(/\bsftx\b/gi, 'sftp')
-    .replace(/\[:\]\/\//g, '://').replace(/\[:\/\/\]/g, '://').replace(/\[:\]/g, ':')
-    .replace(/\s?[[({<]\s?(?:\.|dot|DOT|punto)\s?[\])}>]\s?/g, '.')
-    .replace(/\[\.\]|\\\./g, '.')
-    .replace(/\s?[[({<]\s?(?:@|at|AT)\s?[\])}>]\s?/g, '@')
-    .replace(/\[\/\]/g, '/');
+  return dsRefang(String(s).replace(/\s?[[({<]\s?punto\s?[\])}>]\s?/g, '.').replace(/\bsftx\b/gi, 'sftp'));
 }
 
 const OCT = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
@@ -59,6 +54,33 @@ export function ipv6Class(ip) {
 // Domains that are noise in nearly every report. Overridable with { benignDomains: [] }.
 export const DEFAULT_BENIGN = ['example.com', 'example.org', 'example.net', '*.example.com', '*.example.org', '*.example.net', 'localhost', 'schemas.microsoft.com', 'schemas.openxmlformats.org', 'www.w3.org', 'w3.org', 'purl.org', 'ns.adobe.com', 'schema.org', 'json-schema.org', 'xmlns.com'];
 
+// Infrastructure IPs that are almost always noise (public resolvers etc.). Overridable with { benignIps: [] }.
+export const DEFAULT_BENIGN_IPS = ['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1', '9.9.9.9', '149.112.112.112', '208.67.222.222', '208.67.220.220', '2001:4860:4860::8888', '2001:4860:4860::8844', '2606:4700:4700::1111', '2606:4700:4700::1001'];
+/** Extended noise list (opt-in via { noise: 'extended' }): big-vendor domains common in sandbox and report text. */
+export const EXTENDED_BENIGN = ['microsoft.com', '*.microsoft.com', 'windowsupdate.com', '*.windowsupdate.com', 'google.com', 'www.google.com', 'gstatic.com', '*.gstatic.com', 'apple.com', '*.apple.com', 'mozilla.org', '*.mozilla.org', 'digicert.com', '*.digicert.com', 'verisign.com', 'letsencrypt.org', '*.letsencrypt.org', 'adobe.com', 'cloudflare.com', 'akamai.net', '*.akamaiedge.net'];
+
+/**
+ * Normalise an IOC value for dedupe: lowercase hosts/domains/emails/hashes, strip trailing dots,
+ * compress IPv6, drop default ports and lowercase URL scheme+host (path case is kept).
+ */
+export function normalize(type, value) {
+  const v = String(value).trim();
+  switch (type) {
+    case 'domain': return v.toLowerCase().replace(/\.+$/, '');
+    case 'email': return v.toLowerCase();
+    case 'md5': case 'sha1': case 'sha256': case 'sha512': case 'eth': return v.toLowerCase();
+    case 'ipv4': return v.split('.').map((o) => String(Number(o))).join('.');
+    case 'ipv6': try { return new URL(`http://[${v}]/`).hostname.slice(1, -1); } catch { return v.toLowerCase(); }
+    case 'url': {
+      const m = v.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is); if (!m) return v;
+      let [, sch, auth, rest] = m; sch = sch.toLowerCase(); auth = auth.toLowerCase().replace(/\.(?=$|:)/, '');
+      if ((sch === 'http' && auth.endsWith(':80')) || (sch === 'https' && auth.endsWith(':443'))) auth = auth.replace(/:\d+$/, '');
+      return `${sch}://${auth}${rest}`;
+    }
+    default: return v;
+  }
+}
+
 const dglob = (g) => new RegExp('^' + g.toLowerCase().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
 
 function hashType(h) { return { 32: 'md5', 40: 'sha1', 64: 'sha256', 128: 'sha512' }[h.length]; }
@@ -85,20 +107,29 @@ function validDomain(d) {
  */
 export function extract(text, opts = {}) {
   const want = new Set(opts.types?.length ? opts.types.flatMap((t) => (t === 'hash' ? ['md5', 'sha1', 'sha256', 'sha512'] : t === 'ip' ? ['ipv4', 'ipv6'] : t === 'wallet' ? ['btc', 'eth', 'xmr'] : [t])) : TYPES);
-  const benign = (opts.benignDomains ?? DEFAULT_BENIGN).map(dglob);
+  const benign = (opts.benignDomains ?? [...DEFAULT_BENIGN, ...(opts.noise === 'extended' ? EXTENDED_BENIGN : [])]).map(dglob);
+  const benignIps = new Set((opts.benignIps ?? DEFAULT_BENIGN_IPS).map((x) => normalize(x.includes(':') ? 'ipv6' : 'ipv4', x)));
   const isBenign = (d) => benign.some((r) => r.test(d.toLowerCase()));
   const out = []; const seen = new Set();
-  const add = (type, value, line, raw, ctx, extra = {}) => {
+  let pos = 0; let lineStart = 0; let line = ''; let orig = ''; let wasDefanged = false;
+  // map a column in the refanged line back to the original (defanged) line
+  const origCol = (c) => { if (!wasDefanged) return c; for (let k = 0; k <= orig.length; k++) if (refang(orig.slice(0, k)).length >= c) return k; return orig.length; };
+  const add = (type, value, ln, raw, ctx, extra = {}) => {
+    value = normalize(type, value);
+    if ((type === 'ipv4' || type === 'ipv6') && benignIps.has(value)) return;
     const key = `${type}\0${type === 'url' || type === 'filename' || type === 'registry' ? value : value.toLowerCase()}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ type, value, line, defanged: raw !== value, context: ctx.trim().slice(0, 200), ...(opts.file ? { file: opts.file } : {}), ...extra });
+    const column = origCol(pos) + 1;
+    out.push({ type, value, line: ln, column, offset: lineStart + column - 1, defanged: /\(defanged\)$/.test(raw), context: ctx.trim().slice(0, 200), ...(opts.file ? { file: opts.file } : {}), ...extra });
   };
-  const lines = String(text).split(/\r?\n/);
-  lines.forEach((orig, i) => {
+  const lines = String(text).split(/\n/);
+  lines.forEach((rawLine, i) => {
+    if (i > 0) lineStart += lines[i - 1].length + 1;
+    orig = rawLine.replace(/\r$/, '');
     const ln = i + 1;
-    const line = opts.refang === false ? orig : refang(orig);
-    const wasDefanged = line !== orig;
+    line = opts.refang === false ? orig : refang(orig);
+    wasDefanged = line !== orig;
     const consumed = []; // spans already claimed by URL/email so we don't double count hosts
     const claim = (m) => consumed.push([m.index, m.index + m[0].length]);
     const inClaimed = (idx) => consumed.some(([a, b]) => idx >= a && idx < b);
@@ -106,22 +137,22 @@ export function extract(text, opts = {}) {
     for (const m of line.matchAll(URL_RE)) {
       const u = trimUrl(m[0]); claim({ index: m.index, 0: u });
       let host = ''; try { host = new URL(u).hostname.replace(/^\[|\]$/g, ''); } catch { continue; }
-      if (want.has('url') && !isBenign(host)) add('url', u, ln, rawOf(u), orig, { host });
-      if (host && /^[\d.]+$/.test(host)) { if (want.has('ipv4') && (opts.includePrivate || ipv4Class(host) === 'public')) add('ipv4', host, ln, rawOf(host), orig, { class: ipv4Class(host) }); }
-      else if (host && host.includes(':')) { if (want.has('ipv6') && (opts.includePrivate || ipv6Class(host) === 'public')) add('ipv6', host, ln, rawOf(host), orig, { class: ipv6Class(host) }); }
-      else if (host && want.has('domain') && validDomain(host) && !isBenign(host)) add('domain', host.toLowerCase(), ln, rawOf(host), orig);
+      if (want.has('url') && !isBenign(host)) (pos = m.index, add)('url', u, ln, rawOf(u), orig, { host });
+      if (host && /^[\d.]+$/.test(host)) { if (want.has('ipv4') && (opts.includePrivate || ipv4Class(host) === 'public')) (pos = m.index, add)('ipv4', host, ln, rawOf(host), orig, { class: ipv4Class(host) }); }
+      else if (host && host.includes(':')) { if (want.has('ipv6') && (opts.includePrivate || ipv6Class(host) === 'public')) (pos = m.index, add)('ipv6', host, ln, rawOf(host), orig, { class: ipv6Class(host) }); }
+      else if (host && want.has('domain') && validDomain(host) && !isBenign(host)) (pos = m.index, add)('domain', host.toLowerCase(), ln, rawOf(host), orig);
     }
     for (const m of line.matchAll(EMAIL)) {
       if (inClaimed(m.index)) continue; claim(m);
-      if (want.has('email') && !isBenign(m[0].split('@')[1])) add('email', m[0].toLowerCase(), ln, rawOf(m[0]), orig);
+      if (want.has('email') && !isBenign(m[0].split('@')[1])) (pos = m.index, add)('email', m[0].toLowerCase(), ln, rawOf(m[0]), orig);
       const d = m[0].split('@')[1].toLowerCase();
-      if (want.has('domain') && validDomain(d) && !isBenign(d)) add('domain', d, ln, rawOf(d), orig);
+      if (want.has('domain') && validDomain(d) && !isBenign(d)) (pos = m.index, add)('domain', d, ln, rawOf(d), orig);
     }
-    for (const m of line.matchAll(REG)) { claim(m); if (want.has('registry')) add('registry', m[0].replace(/[.,;:]+$/, ''), ln, m[0], orig); }
+    for (const m of line.matchAll(REG)) { claim(m); if (want.has('registry')) (pos = m.index, add)('registry', m[0].replace(/[.,;:]+$/, ''), ln, m[0], orig); }
     for (const m of line.matchAll(IPV4)) {
       if (inClaimed(m.index) || !want.has('ipv4')) continue;
       const c = ipv4Class(m[0]);
-      if (opts.includePrivate || c === 'public') add('ipv4', m[0], ln, rawOf(m[0]), orig, { class: c });
+      if (opts.includePrivate || c === 'public') (pos = m.index, add)('ipv4', m[0], ln, rawOf(m[0]), orig, { class: c });
     }
     for (const m of line.matchAll(IPV6)) {
       if (inClaimed(m.index) || !want.has('ipv6')) continue;
@@ -130,9 +161,9 @@ export function extract(text, opts = {}) {
       if (/^\d+:\d+(:\d+)?$/.test(v) || /^[0-9a-f]{1,2}(:[0-9a-f]{1,2}){5}$/i.test(v)) continue; // times, MAC addresses
       if ((v.match(/:/g) || []).length < 2) continue;
       const c = ipv6Class(v);
-      if (opts.includePrivate || c === 'public') add('ipv6', v.toLowerCase(), ln, rawOf(v), orig, { class: c });
+      if (opts.includePrivate || c === 'public') (pos = m.index, add)('ipv6', v.toLowerCase(), ln, rawOf(v), orig, { class: c });
     }
-    for (const m of line.matchAll(FILENAME)) { if (want.has('filename') && !inClaimed(m.index)) add('filename', m[0].trim(), ln, m[0], orig); }
+    for (const m of line.matchAll(FILENAME)) { if (want.has('filename') && !inClaimed(m.index)) (pos = m.index, add)('filename', m[0].trim(), ln, m[0], orig); }
     for (const m of line.matchAll(DOMAIN)) {
       if (inClaimed(m.index) || !want.has('domain')) continue;
       const d = m[0].toLowerCase(); const tld = d.split('.').pop();
@@ -140,7 +171,7 @@ export function extract(text, opts = {}) {
       if (/^\d+(\.\d+)+$/.test(d)) continue;
       // "invoice.exe" / "setup.py": file names, not domains, unless the line was defanged (analyst marked it)
       if (FILE_EXT.has(tld) && !wasDefanged && !opts.fileNameDomains) continue;
-      add('domain', d, ln, rawOf(d), orig);
+      (pos = m.index, add)('domain', d, ln, rawOf(d), orig);
     }
     for (const m of line.matchAll(HASH)) {
       const t = hashType(m[0]);
@@ -148,11 +179,11 @@ export function extract(text, opts = {}) {
       if (t === 'sha1' && line.slice(Math.max(0, m.index - 2), m.index) === '0x') continue; // ETH address
       add(t, m[0].toLowerCase(), ln, m[0], orig);
     }
-    if (want.has('cve')) for (const m of line.matchAll(CVE)) add('cve', m[0].toUpperCase(), ln, m[0], orig);
-    if (want.has('attack')) for (const m of line.matchAll(ATTACK)) if (/att&?ck|mitre|technique|tactic|T1\d{3}|TA0|group|software/i.test(line) || m[0].startsWith('T1') || m[0].startsWith('TA0')) add('attack', m[0], ln, m[0], orig);
-    if (want.has('btc')) for (const m of line.matchAll(BTC)) if (btcValid(m[0])) add('btc', m[0], ln, m[0], orig);
-    if (want.has('eth')) for (const m of line.matchAll(ETH)) add('eth', m[0].toLowerCase(), ln, m[0], orig);
-    if (want.has('xmr')) for (const m of line.matchAll(XMR)) add('xmr', m[0], ln, m[0], orig);
+    if (want.has('cve')) for (const m of line.matchAll(CVE)) (pos = m.index, add)('cve', m[0].toUpperCase(), ln, m[0], orig);
+    if (want.has('attack')) for (const m of line.matchAll(ATTACK)) if (/att&?ck|mitre|technique|tactic|T1\d{3}|TA0|group|software/i.test(line) || m[0].startsWith('T1') || m[0].startsWith('TA0')) (pos = m.index, add)('attack', m[0], ln, m[0], orig);
+    if (want.has('btc')) for (const m of line.matchAll(BTC)) if (btcValid(m[0])) (pos = m.index, add)('btc', m[0], ln, m[0], orig);
+    if (want.has('eth')) for (const m of line.matchAll(ETH)) (pos = m.index, add)('eth', m[0].toLowerCase(), ln, m[0], orig);
+    if (want.has('xmr')) for (const m of line.matchAll(XMR)) (pos = m.index, add)('xmr', m[0], ln, m[0], orig);
   });
   return out;
 }
@@ -171,7 +202,9 @@ export function btcValid(a) {
   return sum.equals(bytes.subarray(21));
 }
 
-/** Defang a value for safe sharing. */
+/** Defang a value for safe sharing (delegates to defang-sentinel, "full" style). */
 export function defang(v) {
-  return String(v).replace(/^http/i, 'hxxp').replace(/^ftp/i, 'fxp').replace(/:\/\//, '[://]').replace(/\./g, '[.]').replace(/@/g, '[@]');
+  const str = String(v);
+  const type = /^[a-z][a-z0-9+.-]*:\/\//i.test(str) ? 'url' : str.includes('@') ? 'email' : /^[0-9a-f:]+$/i.test(str) && str.includes(':') ? 'ipv6' : 'domain';
+  return type === 'url' || type === 'email' || /\./.test(str) ? defangValue(str, type, 'full') : str;
 }

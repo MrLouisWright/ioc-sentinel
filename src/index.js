@@ -3,9 +3,9 @@ import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildReport, exceeds, exitCode, formatText, formatJson, formatSarif, formatMarkdown, SEVERITIES, ConfigError, validateConfig } from './core.js';
 import { RULES } from './rules.js';
-import { extract, refang, defang, TYPES, TYPE_RULE, ipv4Class, ipv6Class, DEFAULT_BENIGN, btcValid } from './extract.js';
+import { extract, refang, defang, normalize, TYPES, TYPE_RULE, ipv4Class, ipv6Class, DEFAULT_BENIGN, DEFAULT_BENIGN_IPS, EXTENDED_BENIGN, btcValid } from './extract.js';
 
-export { extract, refang, defang, TYPES, RULES, ipv4Class, ipv6Class, DEFAULT_BENIGN, btcValid, exceeds, exitCode, formatText, formatJson, formatSarif, formatMarkdown, SEVERITIES, ConfigError };
+export { extract, refang, defang, normalize, DEFAULT_BENIGN_IPS, EXTENDED_BENIGN, TYPES, RULES, ipv4Class, ipv6Class, DEFAULT_BENIGN, btcValid, exceeds, exitCode, formatText, formatJson, formatSarif, formatMarkdown, SEVERITIES, ConfigError };
 export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 export const TOOL = { name: 'ioc-sentinel', version: VERSION, rules: RULES, title: 'ioc-sentinel', emoji: '🔎', defaultFailOn: 'critical' };
 
@@ -92,11 +92,13 @@ export function scan(inputs, opts = {}) {
     }
   }
   function one(name, text, bin = false) {
-    const iocs = extract(text, { ...opts, file: name });
+    const watchedIps = new Set(watch.map((w) => w.value));
+    const benignIps = (opts.benignIps ?? DEFAULT_BENIGN_IPS).filter((ip) => !watchedIps.has(ip));
+    const iocs = extract(text, { ...opts, benignIps, file: name });
     const raw = iocs.map((i) => {
       const hit = watch.length ? watchHit(i, watch) : null;
       if (hit) i.watchlist = hit.label || hit.value;
-      return { rule: hit ? 'watchlist-match' : TYPE_RULE[i.type], target: name, file: name, line: bin ? undefined : i.line, location: bin ? `${name} (strings)` : `${name}:${i.line}`, message: hit ? `${label[i.type]} ${defang(i.value)} matches watchlist${hit.label ? ` (${hit.label})` : ''}` : `${label[i.type]}: ${defang(i.value)}`, value: i.value, iocType: i.type, ...(hit ? { fix: 'Treat as a confirmed indicator: block it, hunt for it across your estate and open an incident.' } : {}) };
+      return { rule: hit ? 'watchlist-match' : TYPE_RULE[i.type], target: name, file: name, line: bin ? undefined : i.line, location: bin ? `${name} (strings)` : `${name}:${i.line}:${i.column}`, column: bin ? undefined : i.column, message: hit ? `${label[i.type]} ${defang(i.value)} matches watchlist${hit.label ? ` (${hit.label})` : ''}` : `${label[i.type]}: ${defang(i.value)}`, value: i.value, iocType: i.type, ...(hit ? { fix: 'Treat as a confirmed indicator: block it, hunt for it across your estate and open an incident.' } : {}) };
     });
     const byType = {}; for (const i of iocs) byType[i.type] = (byType[i.type] || 0) + 1;
     return { target: name, summary: { iocs: iocs.length, ...byType, ...(bin ? { mode: 'binary strings' } : {}) }, data: iocs, raw, errors: [] };
@@ -112,8 +114,9 @@ function dedupe(list) {
   const m = new Map();
   for (const i of list) {
     const k = `${i.type}\0${i.value}`;
-    if (!m.has(k)) m.set(k, { type: i.type, value: i.value, defanged: defang(i.value), count: 0, sources: [], ...(i.class ? { class: i.class } : {}), ...(i.watchlist ? { watchlist: i.watchlist } : {}) });
+    if (!m.has(k)) m.set(k, { type: i.type, value: i.value, defanged: defang(i.value), count: 0, sources: [], occurrences: [], ...(i.class ? { class: i.class } : {}), ...(i.watchlist ? { watchlist: i.watchlist } : {}) });
     const e = m.get(k); e.count++; if (i.file && !e.sources.includes(`${i.file}:${i.line}`)) e.sources.push(`${i.file}:${i.line}`);
+    e.occurrences.push({ file: i.file, line: i.line, column: i.column, offset: i.offset });
   }
   return [...m.values()].sort((a, b) => TYPES.indexOf(a.type) - TYPES.indexOf(b.type) || a.value.localeCompare(b.value));
 }
@@ -155,4 +158,44 @@ export function formatStix(report, { name = 'ioc-sentinel extraction', now } = {
     objs.push({ type: 'indicator', spec_version: '2.1', id: `indicator--${uuid5ish(i.type + i.value)}`, created: ts, modified: ts, created_by_ref: identity.id, name: `${i.type}: ${i.defanged}`, indicator_types: [i.watchlist ? 'malicious-activity' : 'unknown'], pattern, pattern_type: 'stix', valid_from: ts, labels: [i.type, ...(i.watchlist ? ['watchlist'] : [])], description: `Seen ${i.count}x in ${i.sources.slice(0, 5).join(', ')}` });
   }
   return JSON.stringify({ type: 'bundle', id: `bundle--${uuid5ish(name + ts)}`, objects: objs }, null, 2) + '\n';
+}
+
+const MISP_TYPE = { url: ['url', 'Network activity'], domain: ['domain', 'Network activity'], ipv4: ['ip-dst', 'Network activity'], ipv6: ['ip-dst', 'Network activity'], email: ['email-src', 'Payload delivery'], md5: ['md5', 'Payload delivery'], sha1: ['sha1', 'Payload delivery'], sha256: ['sha256', 'Payload delivery'], sha512: ['sha512', 'Payload delivery'], cve: ['vulnerability', 'External analysis'], attack: ['text', 'External analysis'], btc: ['btc', 'Financial fraud'], eth: ['text', 'Financial fraud'], xmr: ['xmr', 'Financial fraud'], registry: ['regkey', 'Persistence mechanism'], filename: ['filename', 'Payload delivery'] };
+/**
+ * MISP event JSON ({"Event": {...}}) importable via MISP's "Add event from JSON" or the REST API.
+ * Network/hash attributes get to_ids=true; CVE/ATT&CK/text attributes to_ids=false.
+ * @param {object} report  scan() report
+ * @param {{info?: string, now?: string|Date, distribution?: number, threatLevel?: number}} [opts]
+ */
+export function formatMisp(report, { info = 'ioc-sentinel extraction', now, distribution = 0, threatLevel = 4 } = {}) {
+  const d = now ? new Date(now) : new Date(report.generatedAt);
+  const ts = String(Math.floor(d.getTime() / 1000));
+  const Attribute = report.iocs.map((i) => {
+    const [type, category] = MISP_TYPE[i.type] || ['text', 'Other'];
+    return { uuid: uuid5ish(`misp-${i.type}-${i.value}`), type, category, value: i.value, to_ids: !['text', 'vulnerability'].includes(type), comment: [i.watchlist ? `watchlist: ${i.watchlist}` : '', i.sources.length ? `seen in ${i.sources.slice(0, 5).join(', ')}` : ''].filter(Boolean).join('; '), timestamp: ts, ...(i.type === 'attack' ? { Tag: [{ name: `misp-galaxy:mitre-attack-pattern="${i.value}"` }] } : {}) };
+  });
+  return JSON.stringify({ Event: { uuid: uuid5ish(`misp-event-${info}-${ts}`), info, date: d.toISOString().slice(0, 10), timestamp: ts, analysis: '0', threat_level_id: String(threatLevel), distribution: String(distribution), published: false, Orgc: { name: 'ioc-sentinel' }, Tag: [{ name: 'tlp:amber' }], Attribute } }, null, 2) + '\n';
+}
+
+const xq = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const OPENIOC = { url: ['UrlHistoryItem', 'UrlHistoryItem/URL', 'string'], domain: ['DnsEntryItem', 'DnsEntryItem/Host', 'string'], ipv4: ['PortItem', 'PortItem/remoteIP', 'IP'], ipv6: ['PortItem', 'PortItem/remoteIP', 'IP'], email: ['Email', 'Email/From', 'string'], md5: ['FileItem', 'FileItem/Md5sum', 'md5'], sha1: ['FileItem', 'FileItem/Sha1sum', 'sha1'], sha256: ['FileItem', 'FileItem/Sha256sum', 'sha256'], filename: ['FileItem', 'FileItem/FileName', 'string'], registry: ['RegistryItem', 'RegistryItem/KeyPath', 'string'] };
+/** OpenIOC 1.1 XML (Mandiant schema) with one OR'd IndicatorItem per supported IOC. */
+export function formatOpenIoc(report, { name = 'ioc-sentinel extraction', now } = {}) {
+  const ts = (now ? new Date(now) : new Date(report.generatedAt)).toISOString().replace(/\.\d+Z$/, '');
+  const items = report.iocs.filter((i) => OPENIOC[i.type]).map((i) => {
+    const [doc, search, ctype] = OPENIOC[i.type];
+    return `      <IndicatorItem id="${uuid5ish(`oi-${i.type}-${i.value}`)}" condition="is">\n        <Context document="${doc}" search="${search}" type="mir"/>\n        <Content type="${ctype}">${xq(i.value)}</Content>\n      </IndicatorItem>`;
+  });
+  return `<?xml version="1.0" encoding="utf-8"?>
+<ioc xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" id="${uuid5ish(name + ts)}" last-modified="${ts}" xmlns="http://schemas.mandiant.com/2010/ioc">
+  <short_description>${xq(name)}</short_description>
+  <authored_by>ioc-sentinel</authored_by>
+  <authored_date>${ts}</authored_date>
+  <definition>
+    <Indicator operator="OR" id="${uuid5ish('root-' + name + ts)}">
+${items.join('\n')}
+    </Indicator>
+  </definition>
+</ioc>
+`;
 }

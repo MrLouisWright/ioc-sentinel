@@ -37,9 +37,9 @@ test('drops file names, invalid TLDs and benign domains', () => {
 });
 
 test('IPv4/IPv6 with private filtering and no version-number false positives', () => {
-  const r = extract('8.8.8.8 10.1.2.3 192.168.0.1 203.0.113.5 version 1.2.3.4.5 at 12:30:45 mac 00:1a:2b:3c:4d:5e 2606:4700:4700::1111 fe80::1 ::1');
-  assert.deepEqual(vals(r, 'ipv4'), ['8.8.8.8']);
-  assert.deepEqual(vals(r, 'ipv6'), ['2606:4700:4700::1111']);
+  const r = extract('45.9.148.3 10.1.2.3 192.168.0.1 203.0.113.5 version 1.2.3.4.5 at 12:30:45 mac 00:1a:2b:3c:4d:5e 2a03:2880:f10c::1 fe80::1 ::1');
+  assert.deepEqual(vals(r, 'ipv4'), ['45.9.148.3']);
+  assert.deepEqual(vals(r, 'ipv6'), ['2a03:2880:f10c::1']);
   const p = extract('10.1.2.3 fe80::1', { includePrivate: true });
   assert.deepEqual(vals(p, 'ipv4'), ['10.1.2.3']);
   assert.equal(p.find((i) => i.type === 'ipv4').class, 'private');
@@ -68,7 +68,7 @@ test('CVE, ATT&CK, wallets, registry and file names', () => {
 });
 
 test('type filter and dedupe', () => {
-  const r = extract('8.8.8.8 8.8.8.8 hxxp://a.evil.com', { types: ['ip'] });
+  const r = extract('45.9.148.3 45.9.148.3 hxxp://a.evil.com', { types: ['ip'] });
   assert.deepEqual(r.map((i) => i.type), ['ipv4']);
   assert.throws(() => scan([{ name: 'x', text: '' }], { types: ['nope'] }), /Unknown IOC type/);
 });
@@ -76,19 +76,19 @@ test('type filter and dedupe', () => {
 test('watchlist: exact, CIDR, parent domain and URL prefix', () => {
   const wl = parseWatchlist('# bad stuff\n185.220.101.0/24 tor-exit\nevil[.]com\nhttps://cdn.x.org/payload,stage\n44D88612FEA8A8F36DE82E1278ABB02F eicar\n');
   assert.equal(wl.length, 4);
-  const rep = scan([{ name: 'log', text: 'conn 185.220.101.77\nget https://dl.evil.com/a\nhttps://cdn.x.org/payload/1.bin\n44d88612fea8a8f36de82e1278abb02f\n9.9.9.9' }], { watchlist: wl, now: '2026-10-14' });
+  const rep = scan([{ name: 'log', text: 'conn 185.220.101.77\nget https://dl.evil.com/a\nhttps://cdn.x.org/payload/1.bin\n44d88612fea8a8f36de82e1278abb02f\n45.9.148.5' }], { watchlist: wl, now: '2026-10-14' });
   const hits = rep.findings.filter((f) => f.rule === 'watchlist-match');
   assert.ok(hits.length >= 4, JSON.stringify(hits.map((h) => h.message)));
   assert.ok(hits.some((h) => /tor-exit/.test(h.message)));
   assert.equal(exitCode(rep, 'critical'), 1);
   assert.ok(rep.iocs.find((i) => i.value === '185.220.101.77').watchlist);
-  assert.ok(!rep.iocs.find((i) => i.value === '9.9.9.9').watchlist);
+  assert.ok(!rep.iocs.find((i) => i.value === '45.9.148.5').watchlist);
 });
 
 test('allowlist suppresses an IOC value; expired entry reports', () => {
-  const rep = scan([{ name: 'n', text: '8.8.8.8 1.1.1.1' }], { allow: [{ rule: 'ioc-ipv4', match: '8.8.8.8', reason: 'Google DNS' }], now: '2026-10-14' });
-  assert.deepEqual(rep.iocs.map((i) => i.value), ['1.1.1.1']);
-  const exp = scan([{ name: 'n', text: '8.8.8.8' }], { allow: [{ rule: 'ioc-*', reason: 'old', expires: '2025-01-01' }], now: '2026-10-14' });
+  const rep = scan([{ name: 'n', text: '45.9.148.3 45.9.148.4' }], { allow: [{ rule: 'ioc-ipv4', match: '45.9.148.3', reason: 'known host' }], now: '2026-10-14' });
+  assert.deepEqual(rep.iocs.map((i) => i.value), ['45.9.148.4']);
+  const exp = scan([{ name: 'n', text: '45.9.148.3' }], { allow: [{ rule: 'ioc-*', reason: 'old', expires: '2025-01-01' }], now: '2026-10-14' });
   assert.ok(exp.findings.some((f) => f.rule === 'allow-expired'));
 });
 

@@ -1,14 +1,21 @@
 {
   "name": "ioc-sentinel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "IOC extractor for threat intel and incident response: pulls URLs, domains, IPv4/IPv6, emails, MD5/SHA1/SHA256/SHA512, CVEs, ATT&CK IDs, crypto wallets and registry keys from text, logs and reports, refangs defanged IOCs, filters noise and exports JSON, CSV, STIX 2.1 and SARIF. Zero deps.",
   "type": "module",
-  "main": "./src/index.js",
-  "types": "./src/index.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.d.ts",
-      "default": "./src/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
@@ -16,6 +23,7 @@
     "ioc-sentinel": "bin/ioc-sentinel.js"
   },
   "files": [
+    "dist",
     "src",
     "bin",
     "action.yml",
@@ -27,7 +35,10 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build": "node scripts/build.mjs",
+    "pretest": "npm run build",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ioc",
@@ -58,5 +69,12 @@
   "bugs": {
     "url": "https://github.com/MrLouisWright/ioc-sentinel/issues"
   },
-  "homepage": "https://mrlouiswright.github.io/ioc-sentinel/"
+  "homepage": "https://mrlouiswright.github.io/ioc-sentinel/",
+  "dependencies": {
+    "defang-sentinel": "^1.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.2"
+  }
 }

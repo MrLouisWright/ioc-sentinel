@@ -17,6 +17,24 @@ CLI, library and GitHub Action. Node.js 18+, **zero runtime dependencies**. Bina
 - **Inputs**: files, whole directories (skips `.git` and `node_modules`), or stdin (`-`). Binary files are scanned via static string extraction.
 - **Exports**: `--format csv|stix|list` or `--csv`/`--stix <file>`, with `--defang` to make CSV/list output safe to paste. The STIX 2.1 bundle contains indicators with proper patterns (`[file:hashes.'SHA-256' = '…']`), plus vulnerability and attack-pattern objects for CVEs and ATT&CK IDs, using deterministic IDs. The JSON report has a deduplicated `iocs` array with counts and `file:line` sources.
 
+## Normalise, dedupe, export to MISP / OpenIOC
+
+```sh
+ioc-sentinel report.md --format misp > event.json      # MISP 'Add event from JSON'
+ioc-sentinel report.md --openioc iocs.ioc --stix iocs.stix.json
+ioc-sentinel sandbox.log --noise extended              # also drop microsoft.com, google.com, CDNs, CAs
+```
+
+- IOCs are normalised (case, trailing dots, IPv6 compression, default ports) and deduplicated across defang variants.
+- Common resolver IPs and documentation domains are dropped as noise by default; watchlist entries always win.
+- Each IOC records where it came from: `line`, `column`, `offset`, and every occurrence in the aggregated report.
+- Refanging is provided by [defang-sentinel](https://github.com/MrLouisWright/defang-sentinel); use that package directly if you only need defang/refang.
+
+### Module formats and types
+
+Ships **ESM and CommonJS** (`import` and `require` both work, via `exports`), with TypeScript declarations generated from the source at build time. Tests run on Node 18/20/22 in GitHub Actions (`test/`), including require/import checks against the packed tarball; releases are published with npm provenance.
+
+
 ## Rules
 
 | Rule | Default | Meaning |
