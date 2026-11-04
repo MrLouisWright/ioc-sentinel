@@ -6,7 +6,7 @@
 
 `ioc-sentinel` pulls IOCs out of any text: URLs, domains, IPv4/IPv6 addresses, email addresses, MD5/SHA1/SHA256/SHA512 hashes, CVE IDs, MITRE ATT&CK IDs, Bitcoin/Ethereum/Monero wallets, Windows registry keys and suspicious file names. It **refangs** defanged indicators (`hxxps://evil[.]com`, `user[@]domain(dot)ru`) before matching, removes the usual noise (private IPs, `example.com`, XML namespaces, `setup.py`-style file names) and can **fail a pipeline when an IOC matches your watchlist**.
 
-CLI, library and GitHub Action. Node.js 18+, **zero runtime dependencies**. Binaries are never executed: printable ASCII and UTF-16LE strings are read statically.
+CLI, library and GitHub Action. Node.js 18+, one runtime dependency ([defang-sentinel](https://www.npmjs.com/package/defang-sentinel), for defanging). Binaries are never executed: printable ASCII and UTF-16LE strings are read statically.
 
 ## Features
 
@@ -117,7 +117,7 @@ Inputs: `targets`, `fail-on`, `config`, `sarif`, `json`, `job-summary` (Markdown
 
 ## Requirements
 
-Node.js 18 or newer. No runtime dependencies.
+Node.js 18 or newer. One runtime dependency: [defang-sentinel](https://www.npmjs.com/package/defang-sentinel).
 
 ## Support
 
